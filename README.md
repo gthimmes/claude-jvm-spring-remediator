@@ -29,7 +29,9 @@ This is a **Claude Code skill** - it runs inside Claude Code and uses **Claude's
 /plugin install jvm-spring-remediator
 ```
 
-Once installed, Claude will automatically use this skill when you mention CVE remediation.
+> **Note**: If the `/remediate` slash command doesn't work immediately after installation, restart Claude Code to refresh the skill registry.
+
+Once installed, use `/remediate CVE-XXXX-XXXXX` or ask Claude to help fix a CVE.
 
 ## Quick Start
 
