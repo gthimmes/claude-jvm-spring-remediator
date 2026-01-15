@@ -1,6 +1,7 @@
 ---
-name: jvm-spring-remediator
+name: remediate
 description: Analyze a CVE vulnerability in Java/Kotlin Spring Boot codebases, assess actual exposure, and implement minimal-impact remediation. Use when user provides a CVE ID to analyze and fix.
+user-invocable: true
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit, Task, WebFetch, WebSearch
 ---
 
@@ -25,7 +26,7 @@ When invoked with a CVE ID, you (Claude) will:
 
 The user will provide a single CVE identifier:
 ```
-/jvm-spring-remediator CVE-2024-38816
+/remediate CVE-2024-38816
 ```
 
 Or simply mention a CVE in conversation:
@@ -378,7 +379,7 @@ If issues occur:
 ## Example Session
 
 ```
-User: /jvm-spring-remediator CVE-2024-38816
+User: /remediate CVE-2024-38816
 
 Claude: I'll analyze CVE-2024-38816 for your project.
 

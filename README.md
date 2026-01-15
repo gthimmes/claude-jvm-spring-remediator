@@ -36,7 +36,7 @@ Once installed, Claude will automatically use this skill when you mention CVE re
 **In Claude Code:**
 
 ```
-User: /jvm-spring-remediator CVE-2024-38816
+User: /remediate CVE-2024-38816
 
 Claude: I'll analyze CVE-2024-38816 for your project.
 
@@ -173,7 +173,7 @@ Even when exposure assessment shows LOW or MINIMAL risk, this skill always recom
 
 ## Documentation
 
-- **[skills/jvm-spring-remediator/SKILL.md](skills/jvm-spring-remediator/SKILL.md)** - Full skill instructions
+- **[skills/remediate/SKILL.md](skills/remediate/SKILL.md)** - Full skill instructions
 
 ## Use Cases
 
@@ -216,7 +216,7 @@ Even when exposure assessment shows LOW or MINIMAL risk, this skill always recom
 /plugin install jvm-spring-remediator
 
 # Step 3: Use it
-/jvm-spring-remediator CVE-2024-38816
+/remediate CVE-2024-38816
 ```
 
 **Turn CVE alerts into completed fixes.**
