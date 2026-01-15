@@ -1,0 +1,13 @@
+{
+  "name": "jvm-spring-remediator",
+  "version": "1.0.0",
+  "description": "AI-powered CVE vulnerability analysis and remediation for Java/Kotlin Spring Boot applications",
+  "author": {
+    "name": "gthimmes"
+  },
+  "homepage": "https://github.com/gthimmes/claude-jvm-spring-remediator",
+  "repository": "https://github.com/gthimmes/claude-jvm-spring-remediator",
+  "license": "MIT",
+  "keywords": ["cve", "security", "vulnerability", "remediation", "spring-boot", "java", "kotlin", "jvm"],
+  "skills": ["./skills/"]
+}
