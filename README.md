@@ -10,10 +10,12 @@ This is a **Claude Code skill** - it runs inside Claude Code and uses **Claude's
 
 - **Single CVE focus** - Give it one CVE, get it fixed
 - **Exposure assessment** - Determines if your code actually uses vulnerable paths
+- **Latest safe patch** - Recommends latest patch version, not just minimum fix
 - **Minimal-impact fixes** - Prioritizes patch updates over major version jumps
 - **Actually implements the fix** - Not just snippets, real changes to your build files
+- **Specific test plans** - CVE-type-specific verification steps, not generic guidance
 - **Clean dependency refresh** - Ensures correct versions are pulled after changes
-- **Jira-ready output** - Concise summary you can paste into your ticket
+- **Jira-ready output** - Complete summary with test plan you can paste into your ticket
 
 ## Installation
 
@@ -45,18 +47,22 @@ Claude: I'll analyze CVE-2024-38816 for your project.
 [Fetches CVE details from NVD]
 [Analyzes your dependency tree]
 [Searches codebase for exposure]
+[Queries Maven Central for latest patch version]
+[Verifies no new CVEs in patch range]
 
 ## CVE Analysis: CVE-2024-38816
 
 Severity: CRITICAL (CVSS 9.8)
 Affected: spring-webmvc < 5.3.31
 Your Version: 5.3.27
-Exposure: MEDIUM - RouterFunction usage found in WebConfig.java
+Exposure: MEDIUM - RouterFunction usage found in WebConfig.java:45
 
 ## Remediation Plan
 
 Strategy: Dependency Management Override
-Target: 5.3.31 (patch update, minimal risk)
+Minimum Fix: 5.3.31
+Recommended: 5.3.39 (latest patch in 5.3.x line)
+Risk: MINIMAL - patch update, no breaking changes
 
 Proceed with remediation?
 
@@ -65,14 +71,26 @@ User: Yes
 Claude: [Updates pom.xml]
 [Runs clean build with dependency refresh]
 [Verifies with dependency tree]
+[Generates specific test plan]
 
-Done! Summary for Jira:
+Done! Here's the summary for your Jira ticket:
 
 CVE: CVE-2024-38816
-Action: Updated spring-webmvc to 5.3.31
+Action: Updated spring-webmvc to 5.3.39
 File: pom.xml
 Dependencies Refreshed: Yes
-Next: Run tests, security scan, deploy to staging
+
+## Test Plan
+
+### Automated Tests
+./gradlew test --tests "WebConfigTest"
+
+### Manual Verification (Path Traversal)
+1. Confirm normal access works: curl http://localhost:8080/static/styles.css
+2. Confirm traversal blocked: curl http://localhost:8080/static/../../../etc/passwd
+
+### Security Scan
+./gradlew dependencyCheckAnalyze
 ```
 
 ## What This Does
@@ -96,21 +114,28 @@ When you provide a CVE ID, Claude will:
 
 4. **Recommend Remediation Strategy**
    - Prioritize patch updates (lowest risk)
+   - Recommend latest patch in minor line, not just minimum fix
+   - Verify no new CVEs between minimum fix and latest patch
    - Fall back to minor/major only when necessary
-   - Check target version for new CVEs
 
 5. **Implement the Fix** (after your approval)
    - Update pom.xml or build.gradle
    - Add dependency management overrides if needed
 
-6. **Clean and Refresh Dependencies**
+6. **Generate Specific Test Plan**
+   - Identify affected code paths from exposure assessment
+   - Provide specific test commands for your test framework
+   - Include CVE-type-specific manual verification steps
+   - Never generic "run your tests" guidance
+
+7. **Clean and Refresh Dependencies**
    - Run `./gradlew clean build --refresh-dependencies` for Gradle
    - Run `mvn clean install -U` for Maven
    - Ensures correct versions are actually pulled
 
-7. **Verify and Report**
+8. **Verify and Report**
    - Confirm new version in dependency tree
-   - Provide Jira-ready summary
+   - Provide Jira-ready summary with complete test plan
 
 ## Remediation Strategy Priority
 
@@ -118,7 +143,7 @@ The skill follows this order to minimize risk:
 
 | Priority | Strategy | Risk Level | Example |
 |----------|----------|------------|---------|
-| A | Patch Update | MINIMAL | 5.3.27 → 5.3.31 |
+| A | Patch Update | MINIMAL | 5.3.27 → 5.3.39 |
 | B | Minor Update | MODERATE | 5.3.27 → 5.4.15 |
 | C | Major Update | HIGH | 5.3.27 → 6.1.5 |
 | D | Spring Boot Update | HIGH | 2.7.12 → 2.7.18 |
@@ -155,15 +180,29 @@ Even when exposure assessment shows LOW or MINIMAL risk, this skill always recom
 
 **CVE**: CVE-2024-38816
 **Severity**: CRITICAL (CVSS 9.8)
-**Action Taken**: Added dependency management override for spring-webmvc 5.3.31
+**Action Taken**: Updated spring-webmvc to 5.3.39 (latest in 5.3.x, min fix was 5.3.31)
+**CVE Verification**: No new CVEs in versions 5.3.31 through 5.3.39
 **Files Modified**: pom.xml
-**Dependencies Refreshed**: Yes - ran clean build with dependency refresh
-**Verification**: Dependency tree confirms new version
+**Dependencies Refreshed**: Yes
 
-**Next Steps**:
-- Run test suite
-- Security scan to confirm remediation
-- Deploy to staging
+## Test Plan
+
+### Automated Tests
+./gradlew test --tests "WebConfigTest"
+./gradlew test --tests "StaticResourceTest"
+
+### Manual Verification (Path Traversal)
+1. Positive test - normal access works:
+   curl http://localhost:8080/static/styles.css → returns file
+
+2. Negative test - traversal blocked:
+   curl http://localhost:8080/static/../../../etc/passwd → returns 400
+
+3. Encoded test - encoded traversal blocked:
+   curl http://localhost:8080/static/..%2F..%2Fetc/passwd → returns 400
+
+### Security Scan
+./gradlew dependencyCheckAnalyze
 ```
 
 ## Privacy & Security
@@ -175,19 +214,19 @@ Even when exposure assessment shows LOW or MINIMAL risk, this skill always recom
 
 ## Documentation
 
-- **[skills/remediate/SKILL.md](skills/remediate/SKILL.md)** - Full skill instructions
+- **[skills/jvm-spring-remediator/SKILL.md](skills/jvm-spring-remediator/SKILL.md)** - Full skill instructions
 
 ## Use Cases
 
 ### For Security Teams
 - Quick CVE triage and remediation
 - Consistent remediation approach
-- Audit-ready documentation
+- Audit-ready documentation with test plans
 
 ### For Engineering Teams
 - Fix CVEs without deep dependency research
 - Minimal-risk update strategies
-- Clear verification steps
+- Specific test commands for verification
 
 ### For DevOps
 - Streamlined security patching
@@ -221,8 +260,8 @@ Even when exposure assessment shows LOW or MINIMAL risk, this skill always recom
 /remediate CVE-2024-38816
 ```
 
-**Turn CVE alerts into completed fixes.**
+**Turn CVE alerts into completed fixes with specific test plans.**
 
 ---
 
-Built as a Claude Code plugin - Analyzes exposure, recommends strategy, implements the fix, refreshes dependencies
+Built as a Claude Code plugin - Analyzes exposure, recommends latest safe patch, implements fix, generates test plan
