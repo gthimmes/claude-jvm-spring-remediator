@@ -22,7 +22,7 @@ This is a **Claude Code skill** - it runs inside Claude Code and uses **Claude's
 ### Step 1: Add the Marketplace
 
 ```bash
-/plugin marketplace add gthimmes/claude-jvm-spring-remediator
+/plugin marketplace add gthimmes/claude-marketplace
 ```
 
 ### Step 2: Install the Plugin
