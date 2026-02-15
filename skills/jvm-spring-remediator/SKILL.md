@@ -23,6 +23,12 @@ When invoked with a CVE ID, you (Claude) will:
 8. **Clean and refresh dependencies** to ensure correct versions are pulled
 9. **Verify the remediation** and provide Jira-ready summary with test plan
 
+**Advanced Mode: Parallel Strategy Testing**
+- When explicitly requested, test 4 dependency override strategies in parallel
+- Each strategy runs on an isolated temporary branch with full build validation
+- Compare all results and apply the cleanest working solution
+- Ideal for complex dependency scenarios or when standard approach is unclear
+
 ## Input Format
 
 The user will provide a single CVE identifier:
@@ -33,6 +39,21 @@ The user will provide a single CVE identifier:
 Or simply mention a CVE in conversation:
 ```
 Can you fix CVE-2024-38816 in my project?
+```
+
+**For parallel strategy testing:**
+```
+I need to remediate CVE-2024-38816 affecting spring-webmvc in our Gradle project
+```
+
+Or explicitly request parallel testing:
+```
+/remediate CVE-2024-38816 using parallel strategies
+```
+
+Or ask for comparison of approaches:
+```
+Test multiple dependency override strategies for CVE-2024-38816
 ```
 
 ## Execution Workflow
@@ -161,6 +182,86 @@ Follow this priority order for selecting the safest remediation:
 #### Strategy F: Dependency Exclusion
 - Exclude vulnerable transitive dependency if not used
 - Criteria: Vulnerable library is transitive and not directly used
+
+### Phase 4A: Alternative Parallel Strategy Testing (Advanced)
+
+**When to use this approach:**
+- User explicitly requests parallel strategy testing
+- User wants to compare multiple override approaches
+- Standard strategy selection is unclear or risky
+- Project has complex dependency constraints
+
+**Parallel Strategy Testing Workflow:**
+
+When a user says "I need to remediate [CVE-ID] affecting [LIBRARY] in our [Gradle/Maven] project" and wants to test multiple approaches in parallel:
+
+1. **Do NOT try approaches sequentially.** Instead, immediately create a TaskCreate plan with 4 parallel strategies to test simultaneously.
+
+2. **The 4 parallel strategies to test:**
+   - **Strategy 1**: Override the version property in `ext`/`extra` block
+   - **Strategy 2**: Use a `dependencyManagement` block with `force` (Maven) or `strictly()` (Gradle)
+   - **Strategy 3**: Use `resolutionStrategy.eachDependency` (Gradle) or `<dependency>` override (Maven)
+   - **Strategy 4**: Use dependency constraints with `strictly()` (Gradle) or enforcer plugin (Maven)
+
+3. **For each strategy, spawn a parallel sub-agent using the Task tool that:**
+   - Creates the change on a temporary Git branch named `remediate-[CVE-ID]-strategy-[1-4]`
+   - Implements the specific dependency override approach
+   - Runs the full build via Bash (`./gradlew build` or `mvn clean install`)
+   - Checks the resolved dependency tree to confirm the vulnerable version is gone
+   - Reports success or failure with the exact error message if it fails
+   - Cleans up and returns to the original branch when done
+
+4. **After all agents complete:**
+   - Compare results from all 4 strategies
+   - Identify which strategies succeeded and which failed
+   - Select the cleanest working solution (prioritize simplicity and maintainability)
+   - Apply the winning solution to the main branch
+   - Show the user the diff of the final applied change
+   - Clean up temporary branches
+
+**Example implementation:**
+
+```
+User: I need to remediate CVE-2024-38816 affecting spring-webmvc in our Gradle project using parallel strategies
+
+Claude: I'll test 4 parallel dependency override strategies for CVE-2024-38816.
+
+[Uses TaskCreate to create 4 tasks]
+
+[Spawns 4 parallel Task tool invocations, one for each strategy]
+
+Task 1: Test ext property override
+Task 2: Test dependencyManagement with strictly()
+Task 3: Test resolutionStrategy.eachDependency
+Task 4: Test dependency constraints
+
+[Each agent creates temp branch, applies fix, runs build, checks tree]
+
+[After all complete]
+
+## Results Summary
+
+Strategy 1 (ext property): ✅ SUCCESS - Build passed, spring-webmvc 5.3.39 confirmed
+Strategy 2 (strictly()): ✅ SUCCESS - Build passed, spring-webmvc 5.3.39 confirmed
+Strategy 3 (eachDependency): ❌ FAILED - Conflict with Spring Boot BOM
+Strategy 4 (constraints): ✅ SUCCESS - Build passed, spring-webmvc 5.3.39 confirmed
+
+## Recommendation
+
+Applying Strategy 1 (ext property override) - cleanest and most maintainable approach.
+
+[Shows diff of changes]
+[Applies to main branch]
+[Cleans up temp branches]
+```
+
+**Key principles for parallel testing:**
+- Always run all 4 strategies in parallel, never sequentially
+- Each strategy gets its own isolated temporary branch
+- Each agent reports detailed success/failure with exact error messages
+- Compare all results before selecting the winner
+- Prioritize simplicity and Spring Boot compatibility when choosing winner
+- Always clean up temporary branches after completion
 
 ### Version Selection Process
 
@@ -548,6 +649,16 @@ Even if exposure assessment shows LOW or MINIMAL risk, always recommend and offe
 - Verify no new CVEs exist between the minimum fix and the latest patch
 - Explain the version selection rationale to the user
 
+### When to Use Parallel Strategy Testing
+Use the parallel strategy testing approach (Phase 4A) when:
+- User explicitly requests testing multiple approaches
+- User says "test parallel strategies" or "compare approaches"
+- Standard remediation encounters unexpected conflicts
+- Project has complex Spring Boot BOM interactions
+- You're uncertain which override method will work best
+
+Do NOT use parallel testing by default - it's more resource-intensive. Use the standard workflow (Phase 4) unless there's a clear reason to test multiple strategies.
+
 ### Be Specific
 - Provide exact version numbers
 - Show exact file changes
@@ -607,6 +718,8 @@ If issues occur:
 - **Dependency refresh fails**: Report the error, suggest manual verification
 
 ## Example Session
+
+### Standard Remediation
 
 ```
 User: /remediate CVE-2024-38816
@@ -694,4 +807,79 @@ Since this CVE is a path traversal vulnerability (CWE-22), verify the fix with:
 \`\`\`bash
 ./gradlew dependencyCheckAnalyze
 \`\`\`
+```
+
+### Parallel Strategy Testing
+
+```
+User: I need to remediate CVE-2024-38816 affecting spring-webmvc in our Gradle project using parallel strategies
+
+Claude: I'll test 4 parallel dependency override strategies for CVE-2024-38816.
+
+[Creates 4 tasks with TaskCreate]
+
+Task 1: Test ext property override (branch: remediate-CVE-2024-38816-strategy-1)
+Task 2: Test dependencyManagement with strictly() (branch: remediate-CVE-2024-38816-strategy-2)
+Task 3: Test resolutionStrategy.eachDependency (branch: remediate-CVE-2024-38816-strategy-3)
+Task 4: Test dependency constraints (branch: remediate-CVE-2024-38816-strategy-4)
+
+[Spawns 4 parallel Task tool invocations]
+[Each agent creates temp branch, applies fix, runs build, checks tree]
+
+## Parallel Testing Results
+
+✅ **Strategy 1: ext property override**
+- Branch: remediate-CVE-2024-38816-strategy-1
+- Build: PASSED
+- Verification: spring-webmvc 5.3.39 confirmed in dependency tree
+- Approach: Simple and maintainable
+
+✅ **Strategy 2: dependencyManagement with strictly()**
+- Branch: remediate-CVE-2024-38816-strategy-2
+- Build: PASSED
+- Verification: spring-webmvc 5.3.39 confirmed
+- Approach: Explicit version enforcement
+
+❌ **Strategy 3: resolutionStrategy.eachDependency**
+- Branch: remediate-CVE-2024-38816-strategy-3
+- Build: FAILED
+- Error: Conflict with Spring Boot BOM - version downgraded back to 5.3.27
+- Reason: BOM takes precedence over resolution strategy in this project
+
+✅ **Strategy 4: dependency constraints**
+- Branch: remediate-CVE-2024-38816-strategy-4
+- Build: PASSED
+- Verification: spring-webmvc 5.3.39 confirmed
+- Approach: Modern Gradle constraints API
+
+## Recommendation
+
+Applying **Strategy 1 (ext property override)** to main branch.
+
+**Rationale**:
+- Cleanest and most maintainable approach
+- Compatible with Spring Boot BOM
+- Easy to understand and modify later
+- Least verbose syntax
+
+## Changes Applied
+
+\`\`\`diff
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 1234567..abcdefg 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -1,3 +1,7 @@
++ext {
++    set("spring-webmvc.version", "5.3.39")
++}
++
+ plugins {
+     id("org.springframework.boot") version "2.7.12"
+ }
+\`\`\`
+
+[Cleans up temporary branches]
+
+Done! spring-webmvc updated to 5.3.39 using ext property override.
 ```
