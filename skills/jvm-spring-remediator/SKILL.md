@@ -112,6 +112,27 @@ Determine:
 - Is it a direct or transitive dependency?
 - What is the dependency path?
 
+**CRITICAL: You must check ALL modules and ALL configurations, not just the main module.**
+
+  1. First, find every module that has the vulnerable dependency in ANY configuration:
+
+  \`\`\`bash
+  ./gradlew allDependencyInsight --dependency {library-name} 2>&1 | grep -E "(commons-fileupload|Project |configuration )"
+  \`\`\`
+
+  If `allDependencyInsight` is not available, iterate over every module:
+
+  \`\`\`bash
+  for module in $(./gradlew projects --quiet | grep "Project" | sed "s/.*'\(.*\)'/\1/"); do
+    for config in runtimeClasspath testRuntimeClasspath; do
+      ./gradlew ${module}:dependencyInsight --dependency {library-name} --configuration ${config} 2>&1
+    done
+  done
+  \`\`\`
+
+  2. Record EVERY module + configuration where the vulnerable version appears.
+  3. Your remediation must address ALL of them, not just the first one you find.
+
 ### Phase 3: Exposure Assessment
 
 **IMPORTANT**: Always assess exposure, but always offer the remediation option regardless of exposure level. Code changes over time and a non-exposed vulnerability today could become exposed tomorrow.
@@ -603,6 +624,19 @@ mvn dependency:tree -Dincludes=*:{artifactId}*
 # Gradle
 ./gradlew dependencyInsight --dependency {library-name}
 ```
+ **CRITICAL: Verify the old vulnerable version appears NOWHERE in the entire project.**
+
+  1. For every module + configuration identified in Phase 2, re-run dependencyInsight and confirm:
+     - The new version resolves correctly
+     - The old version does NOT appear without an upgrade arrow (->)
+
+  2. Specifically search for any remaining references to the old version:
+
+  \`\`\`bash
+  ./gradlew :module:dependencyInsight --dependency {library-name} --configuration testRuntimeClasspath 2>&1 | grep "{old-version}"
+  \`\`\`
+
+  If the old version still appears without "-> {new-version}", the remediation is INCOMPLETE. Do not proceed to the summary.
 
 2. Provide a summary for the user's Jira ticket that includes the test plan:
 
