@@ -8,13 +8,16 @@ A Claude Code skill that analyzes CVE vulnerabilities in Java/Kotlin Spring Boot
 
 This is a **Claude Code skill** - it runs inside Claude Code and uses **Claude's capabilities** to analyze, assess, and fix CVE vulnerabilities in your codebase.
 
-- **Single CVE focus** - Give it one CVE, get it fixed
+- **Single CVE or batch scan** - Fix one CVE or scan and remediate many at once
+- **Scanner integration** - Pull CVEs from Dependabot, OWASP Dependency-Check, or Snyk
+- **Smart grouping** - Groups CVEs by library so one upgrade fixes multiple vulnerabilities
 - **Exposure assessment** - Determines if your code actually uses vulnerable paths
 - **Latest safe patch** - Recommends latest patch version, not just minimum fix
 - **Minimal-impact fixes** - Prioritizes patch updates over major version jumps
 - **Actually implements the fix** - Not just snippets, real changes to your build files
 - **Specific test plans** - CVE-type-specific verification steps, not generic guidance
 - **Clean dependency refresh** - Ensures correct versions are pulled after changes
+- **PR creation** - Automatically create a PR with rich context, test plan, and verification checklist
 - **Jira-ready output** - Complete summary with test plan you can paste into your ticket
 
 ## Installation
@@ -37,7 +40,7 @@ Once installed, use `/remediate CVE-XXXX-XXXXX` or ask Claude to help fix a CVE.
 
 ## Quick Start
 
-**In Claude Code:**
+### Fix a single CVE
 
 ```
 User: /remediate CVE-2024-38816
@@ -93,9 +96,49 @@ Dependencies Refreshed: Yes
 ./gradlew dependencyCheckAnalyze
 ```
 
+### Scan and fix all vulnerabilities from Dependabot
+
+```
+User: /remediate scan dependabot
+
+Claude: I'll fetch open Dependabot alerts for your repository.
+
+## Scan Results: 5 CVEs Found (3 Libraries)
+
+| # | Library | CVEs | Severity | Current |
+|---|---------|------|----------|---------|
+| 1 | spring-webmvc | CVE-2024-38816, CVE-2024-38819 | CRITICAL | 5.3.27 |
+| 2 | jackson-databind | CVE-2024-12345 | HIGH | 2.14.1 |
+| 3 | commons-io | CVE-2024-99999 | MEDIUM | 2.11.0 |
+
+Remediate all? Or select specific libraries?
+
+User: all critical and high
+
+Claude: [Remediates spring-webmvc and jackson-databind]
+[Produces consolidated Jira summary with combined test plan]
+```
+
+### Fix a CVE and create a PR
+
+```
+User: /remediate CVE-2024-38816 --create-pr
+
+Claude: [Analyzes, implements fix, verifies]
+
+PR created: https://github.com/your-org/your-repo/pull/142
+Branch: remediate/CVE-2024-38816
+Labels: security, dependencies, critical
+```
+
 ## What This Does
 
-When you provide a CVE ID, Claude will:
+When you provide a CVE ID (or scan results), Claude will:
+
+0. **Scan for Vulnerabilities** (scan mode)
+   - Pull open alerts from Dependabot, OWASP Dependency-Check, or Snyk
+   - Group CVEs by library, deduplicate, and prioritize by severity
+   - Let you choose which to remediate: all, by severity, or specific libraries
 
 1. **Fetch CVE Details** from NVD
    - Severity and CVSS score
@@ -136,6 +179,11 @@ When you provide a CVE ID, Claude will:
 8. **Verify and Report**
    - Confirm new version in dependency tree
    - Provide Jira-ready summary with complete test plan
+
+9. **Create Pull Request** (with `--create-pr`)
+   - Create a branch, commit changes, and open a PR via `gh`
+   - Rich PR body with CVE details, exposure, test plan, and verification checklist
+   - Auto-label with severity level
 
 ## Remediation Strategy Priority
 
@@ -239,29 +287,36 @@ Even when exposure assessment shows LOW or MINIMAL risk, this skill always recom
 - **Maven or Gradle** project
 - **Java or Kotlin** Spring Boot application
 - **Internet access** for NVD API queries
+- **`gh` CLI** (optional) for Dependabot integration and PR creation
+- **Scanner output** (optional) for scan mode: Dependabot alerts, OWASP JSON report, or Snyk JSON report
 
 ## Limitations
 
-- Single CVE at a time (by design for focused remediation)
 - Requires valid, parseable build files
-- Internet access needed for CVE data
+- Internet access needed for CVE data and scanner APIs
 - Complex version conflicts may need manual review
+- PR creation requires `gh` CLI installed and authenticated
+- Dependabot scanner integration requires GitHub repository with Dependabot enabled
 
 ## Get Started
 
 ```bash
 # Step 1: Add the marketplace
-/plugin marketplace add gthimmes/claude-jvm-spring-remediator
+/plugin marketplace add gthimmes/claude-marketplace
 
 # Step 2: Install the plugin
 /plugin install jvm-spring-remediator
 
 # Step 3: Use it
-/remediate CVE-2024-38816
+/remediate CVE-2024-38816                    # Fix a single CVE
+/remediate scan dependabot                   # Scan and fix from Dependabot
+/remediate scan owasp                        # Scan and fix from OWASP report
+/remediate CVE-2024-38816 --create-pr        # Fix and create a PR
+/remediate scan dependabot --create-pr       # Scan, fix all, and create a PR
 ```
 
-**Turn CVE alerts into completed fixes with specific test plans.**
+**Turn CVE alerts into completed fixes with specific test plans - one at a time or in batch.**
 
 ---
 
-Built as a Claude Code plugin - Analyzes exposure, recommends latest safe patch, implements fix, generates test plan
+Built as a Claude Code plugin - Scans vulnerabilities, analyzes exposure, remediates in batch, creates PRs with test plans

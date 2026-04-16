@@ -1,8 +1,8 @@
 ---
 name: remediate
-description: Analyze a CVE vulnerability in Java/Kotlin Spring Boot codebases, assess actual exposure, and implement minimal-impact remediation. Use when user provides a CVE ID to analyze and fix.
+description: Analyze CVE vulnerabilities in Java/Kotlin Spring Boot codebases, assess actual exposure, and implement minimal-impact remediation. Supports single CVE, batch scan from Dependabot/OWASP/Snyk, and automated PR creation. Use when user provides a CVE ID, asks to scan for vulnerabilities, or wants to remediate security issues.
 user-invocable: true
-allowed-tools: Read, Grep, Glob, Bash, Write, Edit, Task, WebFetch, WebSearch
+allowed-tools: Read, Grep, Glob, Bash, Write, Edit, Task, Agent, WebFetch, WebSearch
 ---
 
 # JVM Spring CVE Remediator
@@ -11,8 +11,9 @@ A Claude Code skill that analyzes CVE vulnerabilities in Java/Kotlin Spring Boot
 
 ## What This Skill Does
 
-When invoked with a CVE ID, you (Claude) will:
+When invoked with a CVE ID or scanner source, you (Claude) will:
 
+0. **Scan for vulnerabilities** (scan mode) — pull alerts from Dependabot, OWASP, or Snyk; group by library; let user choose scope
 1. **Fetch CVE details** from NVD and security advisories
 2. **Analyze the project's dependencies** to determine if affected
 3. **Assess actual exposure** by scanning the codebase for usage of vulnerable code paths
@@ -22,6 +23,7 @@ When invoked with a CVE ID, you (Claude) will:
 7. **Generate a specific test plan** based on affected code paths and CVE type
 8. **Clean and refresh dependencies** to ensure correct versions are pulled
 9. **Verify the remediation** and provide Jira-ready summary with test plan
+10. **Create a pull request** (with `--create-pr`) — branch, commit, and open a PR with rich context
 
 **Advanced Mode: Parallel Strategy Testing**
 - When explicitly requested, test 4 dependency override strategies in parallel
@@ -41,6 +43,21 @@ Or simply mention a CVE in conversation:
 Can you fix CVE-2024-38816 in my project?
 ```
 
+**Scan mode (batch from scanner output):**
+```
+/remediate scan                    # Auto-detect scanner output in project
+/remediate scan dependabot         # Read from GitHub Dependabot alerts
+/remediate scan owasp              # Read OWASP Dependency-Check report
+/remediate scan snyk               # Read Snyk JSON output
+```
+
+**With PR creation:**
+```
+/remediate CVE-2024-38816 --create-pr
+/remediate scan --create-pr
+/remediate scan dependabot --create-pr
+```
+
 **For parallel strategy testing:**
 ```
 I need to remediate CVE-2024-38816 affecting spring-webmvc in our Gradle project
@@ -57,6 +74,166 @@ Test multiple dependency override strategies for CVE-2024-38816
 ```
 
 ## Execution Workflow
+
+### Phase 0: Scanner Integration (Scan Mode Only)
+
+**This phase runs only when the user invokes `/remediate scan`.** If the user provides a single CVE ID, skip directly to Phase 1.
+
+#### Phase 0A: Scanner Detection & Data Collection
+
+Determine the scanner source and collect all open vulnerability alerts.
+
+**Auto-detect (`/remediate scan`):**
+Check sources in this order and use the first one that returns results:
+1. Is this a GitHub repo with Dependabot enabled? Try Dependabot alerts.
+2. Look for OWASP Dependency-Check report files in the project.
+3. Look for Snyk report files in the project.
+4. If nothing found, tell the user no scanner output was detected and suggest running one:
+   ```
+   No scanner output detected. You can generate one with:
+   - OWASP: mvn org.owasp:dependency-check-maven:check (or ./gradlew dependencyCheckAnalyze)
+   - Snyk: snyk test --json > snyk-report.json
+   - Or enable Dependabot alerts on your GitHub repository
+   ```
+
+**Dependabot (`/remediate scan dependabot`):**
+```bash
+# Get the repo owner/name from git remote
+REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
+
+# Fetch open Dependabot alerts for the Maven/Gradle ecosystem
+gh api "repos/${REPO}/dependabot/alerts" \
+  --jq '[.[] | select(.state=="open") | select(.dependency.package.ecosystem=="maven" or .dependency.package.ecosystem=="gradle")] | sort_by(.security_advisory.cvss.score) | reverse'
+```
+
+Extract from each alert:
+- CVE ID: `.security_advisory.cve_id`
+- Severity: `.security_advisory.severity`
+- CVSS score: `.security_advisory.cvss.score`
+- Package name: `.dependency.package.name`
+- Current version: `.dependency.scope` and manifest path
+- Fixed version: `.security_advisory.vulnerabilities[].first_patched_version.identifier`
+- Advisory summary: `.security_advisory.summary`
+
+**OWASP Dependency-Check (`/remediate scan owasp`):**
+```bash
+# Look for report files
+find . -name "dependency-check-report.json" -o -name "dependency-check-report.xml" 2>/dev/null
+```
+
+If JSON report found, parse it:
+- CVE IDs: `dependencies[].vulnerabilities[].name`
+- Severity: `dependencies[].vulnerabilities[].cvssv3.baseSeverity` (or cvssv2)
+- CVSS score: `dependencies[].vulnerabilities[].cvssv3.baseScore`
+- Package: `dependencies[].fileName` and `dependencies[].packages[].id`
+- Description: `dependencies[].vulnerabilities[].description`
+
+If only XML report found, parse the equivalent XML structure.
+
+If no report file exists, offer to run the scan:
+```bash
+# Maven
+mvn org.owasp:dependency-check-maven:check -Dformat=JSON
+
+# Gradle (if plugin configured)
+./gradlew dependencyCheckAnalyze
+```
+
+**Snyk (`/remediate scan snyk`):**
+```bash
+# Look for existing report files
+find . -name "snyk-report.json" -o -name "snyk-results.json" -o -name "snyk-test.json" 2>/dev/null
+```
+
+If report found, parse it:
+- CVE IDs: `vulnerabilities[].identifiers.CVE[]`
+- Severity: `vulnerabilities[].severity`
+- CVSS score: `vulnerabilities[].cvssScore`
+- Package: `vulnerabilities[].packageName`
+- Current version: `vulnerabilities[].version`
+- Fixed version: `vulnerabilities[].fixedIn[]`
+- Description: `vulnerabilities[].title`
+
+If no report file exists and `snyk` CLI is available, offer to run:
+```bash
+snyk test --json > snyk-report.json
+```
+
+#### Phase 0B: Triage, Deduplication & Prioritization
+
+After collecting all CVEs from the scanner:
+
+1. **Filter to JVM/Spring dependencies only** — ignore non-Java vulnerabilities if the scanner reports them
+
+2. **Group CVEs by library** — multiple CVEs may affect the same library and be fixed by one upgrade:
+   ```
+   spring-webmvc: [CVE-2024-38816, CVE-2024-38819]  → one upgrade fixes both
+   jackson-databind: [CVE-2024-12345]                 → single CVE
+   ```
+
+3. **Determine group severity** — use the highest severity CVE in each group
+
+4. **Sort groups by severity** — CRITICAL first, then HIGH, MEDIUM, LOW
+
+5. **Present summary table** to the user:
+
+```
+## Scan Results: {N} CVEs Found ({M} Libraries)
+
+| # | Library | CVEs | Highest Severity | Current | Suggested Action |
+|---|---------|------|-----------------|---------|-----------------|
+| 1 | spring-webmvc | CVE-2024-38816, CVE-2024-38819 | CRITICAL (9.8) | 5.3.27 | Upgrade (fixes both) |
+| 2 | jackson-databind | CVE-2024-12345 | HIGH (7.5) | 2.14.1 | Upgrade |
+| 3 | snakeyaml | CVE-2024-11111 | HIGH (7.2) | 1.33 | Upgrade |
+| 4 | commons-io | CVE-2024-99999 | MEDIUM (5.3) | 2.11.0 | Upgrade |
+
+**Options:**
+- "all" — remediate everything
+- "all critical" or "all high" — remediate by severity threshold
+- "1,2" — remediate specific libraries by number
+- "skip 4" — remediate all except specific libraries
+```
+
+#### Phase 0C: Batch Execution Loop
+
+After the user selects which libraries to remediate:
+
+1. **For each selected library group**, run the standard Phases 1-9 workflow:
+   - Use the highest-severity CVE ID for NVD lookup in Phase 1
+   - In Phase 4 (version selection), verify the recommended version fixes ALL CVEs in the group
+   - Track all changes and test plans across iterations
+
+2. **Accumulate results** across all library groups:
+   - List of all files modified
+   - Combined test plan covering all remediations
+   - Any failures or issues encountered
+
+3. **At the end, produce a consolidated Jira summary**:
+
+```
+## Batch Remediation Summary (for Jira)
+
+**Date**: {date}
+**Scanner**: {Dependabot/OWASP/Snyk}
+**CVEs Remediated**: {N}
+**Libraries Updated**: {M}
+
+| Library | Old Version | New Version | CVEs Fixed | Severity |
+|---------|-------------|-------------|------------|----------|
+| spring-webmvc | 5.3.27 | 5.3.39 | CVE-2024-38816, CVE-2024-38819 | CRITICAL |
+| jackson-databind | 2.14.1 | 2.14.3 | CVE-2024-12345 | HIGH |
+
+**Files Modified**: pom.xml, build.gradle
+**Dependencies Refreshed**: Yes
+
+## Combined Test Plan
+{Consolidated test commands and manual verification steps from all remediations}
+
+## Security Scan
+{Command to re-run the original scanner to confirm all CVEs resolved}
+```
+
+4. **If `--create-pr` flag is present**, proceed to Phase 10.
 
 ### Phase 1: CVE Data Gathering
 
@@ -664,6 +841,197 @@ mvn dependency:tree -Dincludes=*:{artifactId}*
 {Security scan command to confirm remediation}
 ```
 
+### Phase 10: Pull Request Creation (when `--create-pr` is used)
+
+**This phase runs only when the user includes `--create-pr` in the command or explicitly asks for a PR during remediation.** If the flag is not present, skip this phase.
+
+#### 10.1 Create a Branch
+
+If currently on the main/default branch, create a remediation branch:
+
+```bash
+# Single CVE
+git checkout -b remediate/CVE-2024-38816
+
+# Batch scan mode — use date to avoid conflicts
+git checkout -b remediate/security-scan-$(date +%Y-%m-%d)
+```
+
+If the user is already on a feature branch, use the current branch.
+
+#### 10.2 Stage and Commit Changes
+
+Stage only the build files that were modified during remediation:
+
+**Single CVE commit:**
+```bash
+# Stage modified build files
+git add pom.xml  # or build.gradle / build.gradle.kts
+
+# Commit with structured message
+git commit -m "fix(security): remediate CVE-2024-38816 in spring-webmvc
+
+Updated spring-webmvc from 5.3.27 to 5.3.39 (latest patch in 5.3.x line).
+Minimum fix version was 5.3.31. Verified no new CVEs in range.
+
+Severity: CRITICAL (CVSS 9.8)
+Exposure: MEDIUM
+Strategy: Dependency management override"
+```
+
+**Batch scan commit:**
+```bash
+git add pom.xml build.gradle build.gradle.kts 2>/dev/null
+
+git commit -m "fix(security): remediate {N} CVEs across {M} libraries
+
+- spring-webmvc: 5.3.27 → 5.3.39 (fixes CVE-2024-38816, CVE-2024-38819)
+- jackson-databind: 2.14.1 → 2.14.3 (fixes CVE-2024-12345)
+- snakeyaml: 1.33 → 1.33.2 (fixes CVE-2024-11111)
+- commons-io: 2.11.0 → 2.11.1 (fixes CVE-2024-99999)
+
+Scanner: {Dependabot/OWASP/Snyk}
+All changes verified via dependency tree analysis."
+```
+
+#### 10.3 Push and Create PR
+
+Push the branch and create a pull request using `gh`:
+
+```bash
+git push -u origin HEAD
+```
+
+**Single CVE PR:**
+```bash
+gh pr create \
+  --title "fix(security): remediate CVE-{ID} in {library}" \
+  --body "$(cat <<'EOF'
+## Security Remediation
+
+### Vulnerability
+| Field | Value |
+|-------|-------|
+| CVE | {CVE-ID} |
+| Severity | {SEVERITY} (CVSS {score}) |
+| Library | {groupId}:{artifactId} |
+| Previous Version | {old-version} |
+| Fixed Version | {new-version} |
+| Exposure | {level} - {explanation} |
+
+### What Changed
+- Updated `{library}` from {old-version} to {new-version} via {strategy}
+- Version {new-version} is the latest patch in the {minor}.x line (minimum fix: {min-fix-version})
+- Verified no new CVEs exist in versions {min-fix-version} through {new-version}
+
+### Test Plan
+
+**Automated Tests:**
+\`\`\`bash
+{specific test commands from Phase 7}
+\`\`\`
+
+**Manual Verification ({CVE Type} - {CWE-ID}):**
+{CVE-type-specific verification steps from Phase 7}
+
+**Security Scan:**
+\`\`\`bash
+{scanner command to confirm remediation}
+\`\`\`
+
+### Verification
+- [x] Dependency tree confirms new version
+- [x] Old version no longer present in any module/configuration
+- [x] Clean build with dependency refresh succeeded
+
+---
+*Remediated by [jvm-spring-remediator](https://github.com/gthimmes/claude-jvm-spring-remediator)*
+EOF
+)" \
+  --label "security,dependencies"
+```
+
+Add severity-specific label:
+```bash
+# Add severity label based on CVSS
+gh pr edit --add-label "critical"   # CVSS >= 9.0
+gh pr edit --add-label "high"       # CVSS >= 7.0
+gh pr edit --add-label "medium"     # CVSS >= 4.0
+gh pr edit --add-label "low"        # CVSS < 4.0
+```
+
+**Batch scan PR:**
+```bash
+gh pr create \
+  --title "fix(security): remediate {N} CVEs across {M} libraries" \
+  --body "$(cat <<'EOF'
+## Security Remediation — Batch Scan
+
+**Scanner**: {Dependabot/OWASP/Snyk}
+**Date**: {date}
+**CVEs Remediated**: {N}
+**Libraries Updated**: {M}
+
+### Vulnerabilities Fixed
+
+| Library | Old Version | New Version | CVEs Fixed | Severity |
+|---------|-------------|-------------|------------|----------|
+| spring-webmvc | 5.3.27 | 5.3.39 | CVE-2024-38816, CVE-2024-38819 | CRITICAL |
+| jackson-databind | 2.14.1 | 2.14.3 | CVE-2024-12345 | HIGH |
+| snakeyaml | 1.33 | 1.33.2 | CVE-2024-11111 | HIGH |
+| commons-io | 2.11.0 | 2.11.1 | CVE-2024-99999 | MEDIUM |
+
+### What Changed
+{Bullet list of each library update with strategy used}
+
+### Combined Test Plan
+
+**Automated Tests:**
+\`\`\`bash
+{consolidated test commands for all affected code paths}
+\`\`\`
+
+**Manual Verification:**
+{consolidated CVE-type-specific steps, grouped by type}
+
+**Security Scan (re-run original scanner):**
+\`\`\`bash
+{command to re-run the scanner and confirm all CVEs resolved}
+\`\`\`
+
+### Verification
+- [x] Dependency tree confirms all new versions
+- [x] Old versions no longer present in any module/configuration
+- [x] Clean build with dependency refresh succeeded
+- [x] {N}/{N} CVEs resolved
+
+---
+*Remediated by [jvm-spring-remediator](https://github.com/gthimmes/claude-jvm-spring-remediator)*
+EOF
+)" \
+  --label "security,dependencies"
+```
+
+#### 10.4 Report PR URL
+
+After creating the PR, display the URL to the user:
+
+```
+## Pull Request Created
+
+**PR**: {URL returned by gh pr create}
+**Branch**: remediate/CVE-2024-38816
+**Labels**: security, dependencies, critical
+
+The PR includes the full remediation summary, test plan, and verification checklist.
+```
+
+**Important notes for PR creation:**
+- Always ask for confirmation before pushing and creating the PR
+- If `gh` CLI is not available or not authenticated, inform the user and provide the branch/commit for manual PR creation
+- If labels don't exist in the repository, `gh pr edit --add-label` may fail silently — this is acceptable
+- Never force-push; if the branch already exists, inform the user and ask how to proceed
+
 ## Key Principles
 
 ### Always Offer Remediation
@@ -715,6 +1083,20 @@ Do NOT use parallel testing by default - it's more resource-intensive. Use the s
 - Include CVE-type-specific manual verification steps (path traversal, deserialization, etc.)
 - Provide concrete verification commands the team can execute
 
+### Scan Mode: Group and Deduplicate
+- Always group CVEs by library before presenting to the user
+- One version bump that fixes 3 CVEs is better than 3 separate changes
+- Present the summary table and let the user choose scope before starting work
+- In batch mode, track cumulative results and produce a single consolidated summary at the end
+
+### PR Creation: Rich Context for Reviewers
+- Include enough detail in the PR body that a reviewer can approve without additional research
+- Always include: CVE ID, severity, exposure assessment, version rationale, test plan, verification checklist
+- Use structured tables for readability
+- For batch PRs, list all CVEs in a summary table and consolidate test plans
+- Always confirm with the user before pushing and creating the PR
+- If `gh` CLI is not available, provide the commit and branch info so the user can create the PR manually
+
 ## Common Libraries Reference
 
 | Short Name | Full Coordinates |
@@ -750,6 +1132,11 @@ If issues occur:
 - **No safe version available**: Explain options (exclusion, alternative library, accept risk)
 - **Build file parse error**: Ask user to verify build file is valid
 - **Dependency refresh fails**: Report the error, suggest manual verification
+- **No scanner output found**: Suggest running a scanner (OWASP, Snyk) or enabling Dependabot
+- **`gh` CLI not available**: For Dependabot integration or PR creation, inform user to install/authenticate `gh` CLI and provide manual alternatives
+- **Dependabot alerts API returns empty**: Check if Dependabot is enabled on the repo, or if all alerts are already resolved
+- **PR creation fails**: Provide the branch name and commit so the user can create the PR manually
+- **Scanner report format unrecognized**: Ask user to verify the report was generated correctly and provide the file path
 
 ## Example Session
 
@@ -916,4 +1303,106 @@ index 1234567..abcdefg 100644
 [Cleans up temporary branches]
 
 Done! spring-webmvc updated to 5.3.39 using ext property override.
+```
+
+### Scanner Integration (Batch Mode)
+
+```
+User: /remediate scan dependabot
+
+Claude: I'll fetch open Dependabot alerts for your repository.
+
+[Runs gh api to fetch Dependabot alerts]
+[Filters to Maven/Gradle ecosystem]
+[Groups CVEs by library]
+
+## Scan Results: 5 CVEs Found (3 Libraries)
+
+| # | Library | CVEs | Highest Severity | Current | Suggested Action |
+|---|---------|------|-----------------|---------|-----------------|
+| 1 | spring-webmvc | CVE-2024-38816, CVE-2024-38819 | CRITICAL (9.8) | 5.3.27 | Upgrade (fixes both) |
+| 2 | jackson-databind | CVE-2024-12345 | HIGH (7.5) | 2.14.1 | Upgrade |
+| 3 | commons-io | CVE-2024-99999, CVE-2024-99998 | MEDIUM (5.3) | 2.11.0 | Upgrade (fixes both) |
+
+Remediate all? Or select specific libraries (e.g., "1,2" or "all critical")?
+
+User: all critical and high
+
+Claude: Remediating libraries #1 (spring-webmvc) and #2 (jackson-databind).
+
+### Remediating spring-webmvc (2 CVEs)...
+
+[Runs standard Phases 1-9 for spring-webmvc]
+[Fetches CVE details, analyzes dependencies, assesses exposure]
+[Recommends 5.3.39, verifies it fixes both CVEs]
+[Updates pom.xml, refreshes dependencies, verifies]
+
+✅ spring-webmvc: 5.3.27 → 5.3.39 (fixes CVE-2024-38816 and CVE-2024-38819)
+
+### Remediating jackson-databind (1 CVE)...
+
+[Runs standard Phases 1-9 for jackson-databind]
+[Fetches CVE details, analyzes dependencies, assesses exposure]
+[Recommends 2.14.3, verifies fix]
+[Updates pom.xml, refreshes dependencies, verifies]
+
+✅ jackson-databind: 2.14.1 → 2.14.3 (fixes CVE-2024-12345)
+
+## Batch Remediation Summary (for Jira)
+
+**Scanner**: Dependabot
+**CVEs Remediated**: 3
+**Libraries Updated**: 2
+
+| Library | Old Version | New Version | CVEs Fixed | Severity |
+|---------|-------------|-------------|------------|----------|
+| spring-webmvc | 5.3.27 | 5.3.39 | CVE-2024-38816, CVE-2024-38819 | CRITICAL |
+| jackson-databind | 2.14.1 | 2.14.3 | CVE-2024-12345 | HIGH |
+
+**Files Modified**: pom.xml
+**Dependencies Refreshed**: Yes
+
+## Combined Test Plan
+
+### Automated Tests
+./gradlew test --tests "WebConfigTest"
+./gradlew test --tests "JacksonConfigTest"
+
+### Manual Verification
+1. Path Traversal (spring-webmvc): Test traversal attempts are blocked
+2. Deserialization (jackson-databind): Verify type filtering active
+
+### Security Scan
+./gradlew dependencyCheckAnalyze
+```
+
+### PR Creation
+
+```
+User: /remediate CVE-2024-38816 --create-pr
+
+Claude: I'll analyze CVE-2024-38816 and create a PR with the fix.
+
+[Runs standard Phases 1-9]
+[Fetches CVE data, analyzes dependencies, assesses exposure]
+[Recommends spring-webmvc 5.3.39]
+[Implements fix, refreshes dependencies, verifies]
+
+Remediation complete. Ready to create PR.
+
+I'll create a branch, commit the changes, and open a PR. Proceed?
+
+User: Yes
+
+Claude: [Creates branch remediate/CVE-2024-38816]
+[Commits pom.xml changes with structured message]
+[Pushes branch and creates PR via gh]
+
+## Pull Request Created
+
+**PR**: https://github.com/your-org/your-repo/pull/142
+**Branch**: remediate/CVE-2024-38816
+**Labels**: security, dependencies, critical
+
+The PR includes the full remediation summary, test plan, and verification checklist.
 ```
